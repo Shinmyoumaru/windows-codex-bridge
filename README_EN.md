@@ -1,19 +1,40 @@
 # Windows Codex Bridge
 
-A lightweight HTTP bridge that enables Linux/containerized AI Agents (like Hermes Agent) to delegate coding tasks to OpenAI Codex CLI running on Windows.
+[**中文**](README.md) | English
+
+---
+
+When AI agents run inside Docker/Podman containers (based on WSL), they cannot directly invoke OpenAI Codex CLI on the Windows host. This bridge solves that cross-environment code execution problem.
+
+Security is also a first-class concern: a **per-request email verification code** ensures only authorized users can trigger Codex tasks.
 
 ## Architecture
 
 ```
-Hermes (Linux/W)  -->  HTTP POST  -->  Windows Codex Bridge  -->  codex exec
-     (Agent)           :8765            (Python/FastAPI)        (OpenAI Codex)
+Host Windows                Container (WSL/Docker)
+┌─────────────────┐         ┌──────────────────────────────┐
+│  Codex CLI      │         │  Hermes Agent               │
+│  codex.cmd      │         │  (or any AI Agent)          │
+│                 │         │                              │
+│  Bridge Service │◄────────┤  HTTP POST                   │
+│  (FastAPI)      │  :8765  │  /codex                     │
+│                 │         │                              │
+│  SMTP Email     │         │                              │
+│  Verification   │         │                              │
+└─────────────────┘         └──────────────────────────────┘
 ```
 
-Hermes must never execute Windows shell commands directly. All operations flow through this trusted bridge layer.
+The container agent never executes Windows commands directly. All operations go through the trusted HTTP bridge.
+
+## What This Solves
+
+- Containers cannot invoke Windows host's `codex` command directly
+- Docker/WSL network isolation preventing cross-environment communication
+- **Security** — Email verification ensures only authorized users can trigger Codex
 
 ## Features
 
-- HTTP API — REST interface callable from any language (curl, Python, etc.)
+- HTTP API — REST interface callable from any language
 - Email verification — 6-digit code sent to configured email before each Codex call; code expires in 5 min, token valid for 30 min
 - Path safety enforcement — workdir must be inside `F:\hermes_safe` and must be a git repository
 - Sandboxed execution — Codex runs in `read-only` or `workspace-write` mode
@@ -36,18 +57,16 @@ $env:CODEX_SMTP_PASSWORD="your_smtp_password"
 uvicorn codex_server:app --host 0.0.0.0 --port 8765
 ```
 
-### 2. Configure SMTP email (optional — only needed for auth)
-
-The bridge sends verification codes via SMTP. Set these environment variables:
+### 2. Configuration
 
 | Variable | Description |
 |---|---|
-| `CODEX_VERIFY_EMAIL_TO` | Email address to receive verification codes |
-| `CODEX_SMTP_HOST` | SMTP server hostname |
-| `CODEX_SMTP_PORT` | SMTP port (default 465) |
-| `CODEX_SMTP_USER` | SMTP username |
-| `CODEX_SMTP_PASSWORD` | SMTP password |
-| `CODEX_SMTP_FROM` | Sender address (default = SMTP_USER) |
+| CODEX_VERIFY_EMAIL_TO | **Required.** Email that receives verification codes; also the sole identity credential |
+| CODEX_SMTP_HOST | SMTP server hostname |
+| CODEX_SMTP_PORT | SMTP port (default 465) |
+| CODEX_SMTP_USER | SMTP username |
+| CODEX_SMTP_PASSWORD | SMTP password |
+| CODEX_SMTP_FROM | Sender address (default = SMTP_USER) |
 
 ### 3. Call from an Agent
 
@@ -65,54 +84,42 @@ if os.path.exists(TOKEN_FILE):
         if data["expires_at"] > time.time():
             token = data["token"]
 
-# Call Codex
-payload = {
-    "prompt": "List all git repositories under F:\\hermes_safe",
-    "workdir": r"F:\hermes_safe",
-    "mode": "read_only"
-}
+payload = {"prompt": "List all git repositories under F:\\hermes_safe", "workdir": r"F:\hermes_safe", "mode": "read_only"}
 headers = {"Content-Type": "application/json"}
 if token:
     headers["Authorization"] = f"Bearer {token}"
 
 req = urllib.request.Request(CODEX_URL, data=json.dumps(payload).encode(), headers=headers, method="POST")
 with urllib.request.urlopen(req, timeout=1800) as resp:
-    result = json.loads(resp.read().decode())
-    print(result["stdout"])
+    print(json.loads(resp.read())["stdout"])
 ```
 
-### 4. Email verification flow
+### 4. Email Verification Flow
 
-On first call, the bridge returns `401 auth_required` and emails a 6-digit code. Exchange it for a token via `/auth/verify`:
+First call returns `401 auth_required` and emails a 6-digit code to `CODEX_VERIFY_EMAIL_TO`. Exchange it for a token via `/auth/verify`:
 
 ```python
-verify_req = urllib.request.Request(
-    BASE_URL + "/auth/verify",
-    data=json.dumps({"code": "594594"}).encode(),
-    headers={"Content-Type": "application/json"},
-    method="POST"
-)
+verify_req = urllib.request.Request(BASE_URL + "/auth/verify", data=json.dumps({"code": "594594"}).encode(), headers={"Content-Type": "application/json"}, method="POST")
 with urllib.request.urlopen(verify_req, timeout=30) as resp:
-    result = json.loads(resp.read())
-    token = result["token"]
-    # Save to TOKEN_FILE with expires_at
+    token = json.loads(resp.read())["token"]
+    # Save to TOKEN_FILE (include expires_at)
 ```
 
 ## API Endpoints
 
 | Endpoint | Method | Description |
 |---|---|---|
-| `/health` | GET | Health check |
-| `/auth/start` | POST | Trigger verification email |
-| `/auth/verify` | POST | Exchange code for access token |
-| `/codex` | POST | Execute Codex task (requires token) |
+| /health | GET | Health check |
+| /auth/start | POST | Manually trigger verification email |
+| /auth/verify | POST | Exchange code for access token |
+| /codex | POST | Execute Codex task (requires token) |
 
 ## Modes
 
 | Mode | Description |
 |---|---|
-| `read_only` | Inspect repository without modifying any files |
-| `edit` | Allow Codex to create/modify files |
+| read_only | Read-only inspection, no file modifications |
+| edit | Allow Codex to create/modify files |
 
 ## Security Rules
 
@@ -120,13 +127,12 @@ with urllib.request.urlopen(verify_req, timeout=30) as resp:
 2. Never set workdir outside `F:\hermes_safe`
 3. Never hardcode or log access tokens
 4. All operations must go through the HTTP bridge
+5. The verification email is the sole identity credential — keep `CODEX_VERIFY_EMAIL_TO` secure
 
 ## Files
 
 - `codex_server.py` — Windows-side bridge service (FastAPI)
-- `SKILL.md` — Hermes Agent skill documentation (for agent consumption)
-- `README.md` — This file
-- `README_CN.md` — Chinese version
+- `SKILL.md` — Hermes Agent skill documentation
 
 ## License
 
