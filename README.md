@@ -1,5 +1,9 @@
 # Windows Codex Bridge
 
+[English](README_EN.md) | **中文**
+
+---
+
 通过 HTTP 接口将 Linux/W容器中的 AI Agent（如 Hermes Agent）连接到 Windows 上的 OpenAI Codex CLI，实现远程代码任务执行。
 
 ## 架构
@@ -38,8 +42,6 @@ uvicorn codex_server:app --host 0.0.0.0 --port 8765
 
 ### 2. 配置 SMTP 邮件（可选，仅认证需要）
 
-Bridge 默认通过 QQ 邮箱或其他 SMTP 服务发送验证码。配置以下环境变量：
-
 | 环境变量 | 说明 |
 |---|---|
 | CODEX_VERIFY_EMAIL_TO | 接收验证码的邮箱 |
@@ -65,36 +67,24 @@ if os.path.exists(TOKEN_FILE):
         if data["expires_at"] > time.time():
             token = data["token"]
 
-# 调用 Codex
-data = {
-    "prompt": "请列出 F:\\hermes_safe 下的所有 git 仓库",
-    "workdir": r"F:\hermes_safe",
-    "mode": "read_only"
-}
+payload = {"prompt": "请列出 F:\\hermes_safe 下的所有 git 仓库", "workdir": r"F:\hermes_safe", "mode": "read_only"}
 headers = {"Content-Type": "application/json"}
 if token:
     headers["Authorization"] = f"Bearer {token}"
 
-req = urllib.request.Request(CODEX_URL, data=json.dumps(data).encode(), headers=headers, method="POST")
+req = urllib.request.Request(CODEX_URL, data=json.dumps(payload).encode(), headers=headers, method="POST")
 with urllib.request.urlopen(req, timeout=1800) as resp:
-    result = json.loads(resp.read().decode())
-    print(result["stdout"])
+    print(json.loads(resp.read())["stdout"])
 ```
 
 ### 4. 验证码流程
 
-首次调用时 Bridge 会返回 401 auth_required，同时向配置的邮箱发送 6 位验证码。使用验证码调用 /auth/verify 获取 Token：
+首次调用返回 401 auth_required，同时邮箱收到 6 位验证码。调用 /auth/verify 换取 Token：
 
 ```python
-verify_req = urllib.request.Request(
-    BASE_URL + "/auth/verify",
-    data=json.dumps({"code": "594594"}).encode(),
-    headers={"Content-Type": "application/json"},
-    method="POST"
-)
+verify_req = urllib.request.Request(BASE_URL + "/auth/verify", data=json.dumps({"code": "594594"}).encode(), headers={"Content-Type": "application/json"}, method="POST")
 with urllib.request.urlopen(verify_req, timeout=30) as resp:
-    result = json.loads(resp.read())
-    token = result["token"]
+    token = json.loads(resp.read())["token"]
     # 保存到 TOKEN_FILE
 ```
 
@@ -102,29 +92,29 @@ with urllib.request.urlopen(verify_req, timeout=30) as resp:
 
 | 端点 | 方法 | 说明 |
 |---|---|---|
-| /health | GET | 健康检查，返回服务状态 |
-| /auth/start | POST | 触发发送验证码邮件 |
-| /auth/verify | POST | 验证验证码，返回访问 Token |
+| /health | GET | 健康检查 |
+| /auth/start | POST | 触发验证码邮件 |
+| /auth/verify | POST | 验证并返回 Token |
 | /codex | POST | 执行 Codex 任务（需 Token） |
 
 ## 模式
 
 | 模式 | 说明 |
 |---|---|
-| read_only | 只读扫描仓库，不修改任何文件 |
-| edit | 允许 Codex 修改/创建文件 |
+| read_only | 只读扫描，不修改文件 |
+| edit | 允许修改/创建文件 |
 
 ## 安全规则
 
-1. 永远不要在 Hermes 容器内直接执行 codex、powershell.exe、cmd.exe 等命令
+1. 永远不要在容器内直接执行 codex、powershell.exe 等 Windows 命令
 2. 永远不要将 workdir 设置在 F:\hermes_safe 之外
 3. 永远不要将 Token 硬编码或打印到日志
-4. 所有操作必须通过 HTTP 桥接层进行
+4. 所有操作必须通过 HTTP 桥接层
 
-## 文件说明
+## 文件
 
 - codex_server.py — Windows 端 Bridge 服务（FastAPI）
-- SKILL.md — Hermes Agent 技能文档（供 Agent 阅读）
+- SKILL.md — Hermes Agent 技能文档
 
 ## 许可证
 
